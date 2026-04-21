@@ -1,0 +1,96 @@
+from machine import Pin, PWM, time_pulse_us
+import time
+
+# --- Ultrasonic Pins ---
+trig = Pin(32, Pin.OUT)
+echo = Pin(33, Pin.IN)
+
+# --- Motor 1 pins (linked to ultrasonic) ---
+ena = PWM(Pin(13))
+in1 = Pin(22, Pin.OUT)
+in2 = Pin(23, Pin.OUT)
+ena.freq(1000)
+
+# --- Motor 2 pins (jumper on ENB, no PWM needed) ---
+in3 = Pin(18, Pin.OUT)
+in4 = Pin(19, Pin.OUT)
+
+# --- Settings ---
+MIN_DIST = 2
+MAX_DIST = 30
+LEVELS = 10
+
+readings = []
+SMOOTH_SIZE = 5
+
+prev_level = -1
+current_direction = 0
+last_change_time = 0      # stores time of last direction change
+
+# --- Start Motor 2 ---
+in3.on()
+in4.off()
+print("Motor 2 running")
+
+# --- Main Loop ---
+while True:
+
+    # STEP 1: send trigger pulse
+    trig.off()
+    time.sleep_us(2)
+    trig.on()
+    time.sleep_us(10)
+    trig.off()
+
+    # STEP 2: measure echo
+    duration = time_pulse_us(echo, 1, 30000)
+
+    # STEP 3: skip bad readings
+    if duration < 0:
+        print("No reading")
+        time.sleep_ms(20)
+        continue
+
+    # STEP 4: convert to cm
+    distance = duration / 58
+
+    # STEP 5: clamp to gesture zone
+    if distance < MIN_DIST:
+        distance = MIN_DIST
+    if distance > MAX_DIST:
+        distance = MAX_DIST
+
+    # STEP 6: smooth the reading
+    readings.append(distance)
+    if len(readings) > SMOOTH_SIZE:
+        readings.pop(0)
+    total = 0
+    for r in readings:
+        total = total + r
+    smoothed = total / len(readings)
+
+    # STEP 7: map to level
+    level = int((smoothed - MIN_DIST) / (MAX_DIST - MIN_DIST) * (LEVELS - 1))
+
+    # STEP 8: check how much time passed since last direction change
+    time_passed = time.ticks_diff(time.ticks_ms(), last_change_time)
+
+    # STEP 9: only change direction if level changed AND 1 second has passed
+    if level != prev_level and time_passed > 1000:
+
+        if level > prev_level:
+            in1.on()
+            in2.off()
+            ena.duty_u16(32767)
+            print("UP   | Distance:", smoothed, "cm | Level:", level)
+
+        else:
+            in1.off()
+            in2.on()
+            ena.duty_u16(32767)
+            print("DOWN | Distance:", smoothed, "cm | Level:", level)
+
+        prev_level = level
+        last_change_time = time.ticks_ms()   # reset the timer
+
+    time.sleep_ms(20)
