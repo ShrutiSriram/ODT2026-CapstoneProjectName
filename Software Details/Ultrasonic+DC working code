@@ -1,0 +1,125 @@
+from machine import Pin, PWM
+import time
+
+TRIG_PIN = 18
+ECHO_PIN = 19
+
+MOTOR_IN1 = 22
+MOTOR_IN2 = 23
+MOTOR_EN  = 15
+
+trig = Pin(TRIG_PIN, Pin.OUT)
+echo = Pin(ECHO_PIN, Pin.IN)
+
+in1 = Pin(MOTOR_IN1, Pin.OUT)
+in2 = Pin(MOTOR_IN2, Pin.OUT)
+en = PWM(Pin(MOTOR_EN), freq=1000)
+
+# ============================================================
+# MOTOR CONTROL
+# ============================================================
+
+def motor_clockwise(speed):
+    in1.value(1)
+    in2.value(0)
+    en.duty(speed)
+    print("CW | speed:", speed)
+
+def motor_anticlockwise(speed):
+    in1.value(0)
+    in2.value(1)
+    en.duty(speed)
+    print("ACW | speed:", speed)
+
+def motor_stop():
+    in1.value(0)
+    in2.value(0)
+    en.duty(0)
+    print("STOP")
+
+# ============================================================
+# ULTRASONIC
+# ============================================================
+
+def measure_distance():
+    trig.value(0)
+    time.sleep_us(2)
+    trig.value(1)
+    time.sleep_us(10)
+    trig.value(0)
+
+    # Timeout handling — if echo never comes, return 30
+    timeout = time.ticks_us()
+    while echo.value() == 0:
+        if time.ticks_diff(time.ticks_us(), timeout) > 30000:
+            return 30   # No echo received = treat as max distance
+
+    start = time.ticks_us()
+
+    timeout = time.ticks_us()
+    while echo.value() == 1:
+        if time.ticks_diff(time.ticks_us(), timeout) > 30000:
+            return 30   # Echo too long = out of range
+
+    end = time.ticks_us()
+
+    dist = (time.ticks_diff(end, start) / 2) / 29.1
+
+    # Clamp to valid range 2cm–30cm
+    if dist < 2:
+        return 2
+    if dist > 30:
+        return 30
+
+    return dist
+
+# ============================================================
+# SPEED MAPPING
+# Maps distance (2–30cm) directly to motor speed (0–1023)
+# The closer the hand, the faster the motor
+# ============================================================
+
+def map_speed(dist):
+    speed = int(300 - ((dist - 2) / (30 - 2)) * (400 - 150))
+    # Max speed is now 400 (was 1023), min speed is 150 (was 200)
+    # Tune the 400 up/down to your liking — lower = slower overall
+    return speed
+
+# ============================================================
+# DISTANCE ZONES
+# Range 2–30cm split into two halves:
+# 2–16cm  → CLOCKWISE     (hand close = move up)
+# 16–30cm → ANTICLOCKWISE (hand far   = move down)
+# 16cm is the midpoint — adjust this if needed
+# ============================================================
+
+MIDPOINT = 16   # Edit this to shift where CW/ACW switches over
+
+# ============================================================
+# MAIN LOOP
+# ============================================================
+
+print("System ready. Range: 2cm to 30cm")
+print(f"  0–{MIDPOINT}cm  = Clockwise")
+print(f"  {MIDPOINT}–30cm = Anticlockwise")
+
+while True:
+    dist = measure_distance()
+    if dist >= 30:          # ← ADD THIS
+        motor_stop()        # ← AND THIS
+        continue            # ← AND THIS — skips rest of loop entirely
+    print("Distance:", round(dist, 1), "cm")
+
+    if dist < MIDPOINT:
+        # Hand is close — clockwise, faster as hand gets closer
+        speed = map_speed(dist)
+        motor_clockwise(speed)
+
+    elif dist >= MIDPOINT:
+        # Hand is far — anticlockwise, faster as hand moves further
+        speed = map_speed(30 - (dist - 2))
+        # Inverted map: far distance = high speed anticlockwise
+        motor_anticlockwise(speed)
+
+    time.sleep_ms(50)   # 50ms between readings = 20 readings/sec
+                        # Stable enough for smooth motor response
