@@ -1,0 +1,415 @@
+import network
+import socket
+import neopixel
+import time
+from machine import Pin, PWM
+
+#  PIN DEFINITIONS
+
+# Push button (active LOW with internal pull-up)
+pb          = Pin(4,  Pin.IN, Pin.PULL_UP)
+  
+# Laser module
+laser       = Pin(5,  Pin.OUT)
+
+# LDR (digital output — LOW = beam detected)
+ldr         = Pin(34, Pin.IN)
+
+# LED strips — 3x WS2812B strips (8 LEDs each = 24 total)
+STRIP_PIN   = 15
+NUM_STRIP   = 24
+strip       = neopixel.NeoPixel(Pin(STRIP_PIN), NUM_STRIP)
+
+# Buzzer (PWM)
+BUZZER_PIN  = 21
+buzzer      = PWM(Pin(BUZZER_PIN))
+buzzer.duty(0)
+
+# NeoPixel ring — 16 LEDs
+RING_PIN    = 16
+NUM_RING    = 16
+ring        = neopixel.NeoPixel(Pin(RING_PIN), NUM_RING)
+
+# Motor 1 — CW 3s → ACW 3s  (L298N channel A)
+m1_in1      = Pin(25, Pin.OUT)
+m1_in2      = Pin(26, Pin.OUT)
+m1_ena      = PWM(Pin(33), freq=100)
+
+# Motor 2 — CW full 20s  (separate L298N)
+m2_in1      = Pin(22, Pin.OUT) 
+m2_in2      = Pin(23, Pin.OUT)
+m2_ena      = PWM(Pin(13), freq=100)
+
+# ─────────────────────────────────────────
+#  TUNING CONSTANTS
+# ─────────────────────────────────────────
+
+# How long Motor 1 runs in each direction (one rotation CW, one ACW).
+# Adjust this until one full rotation looks right on your hardware.
+MOTOR1_ROTATION_MS = 1000   # milliseconds per direction
+
+# ─────────────────────────────────────────
+#  WIFI ACCESS POINT + WEB SERVER
+# ─────────────────────────────────────────
+
+ap = network.WLAN(network.AP_IF)
+ap.active(True)
+ap.config(essid='Mind Flayer', password='12345678')
+print("Access Point Active — IP:", ap.ifconfig()[0])
+
+addr   = socket.getaddrinfo('0.0.0.0', 80)[0][-1]
+server = socket.socket()
+server.bind(addr)
+server.listen(1)
+server.setblocking(False)          # non-blocking so ride loop can keep running
+print("Web server running (non-blocking)...")
+
+html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mind Flayer</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:#000;color:#f0f0f0;font-family:Georgia,serif;min-height:100vh;
+box-shadow:inset 0 0 120px rgba(180,0,0,0.35);padding:0 0 40px 0;}
+@keyframes flicker{
+0%{text-shadow:0 0 10px #ff0000,0 0 30px #cc0000,0 0 60px #990000;}
+15%{text-shadow:0 0 4px #ff0000,0 0 10px #cc0000;}
+20%{text-shadow:0 0 10px #ff0000,0 0 30px #cc0000,0 0 60px #990000;}
+45%{text-shadow:0 0 3px #ff0000;}
+50%{text-shadow:0 0 10px #ff0000,0 0 30px #cc0000,0 0 60px #990000;}
+80%{text-shadow:0 0 6px #ff0000,0 0 20px #cc0000;}
+100%{text-shadow:0 0 10px #ff0000,0 0 30px #cc0000,0 0 60px #990000;}}
+@keyframes pulseborder{
+0%{border-left-color:#cc0000;}50%{border-left-color:#ff4444;}100%{border-left-color:#cc0000;}}
+.warning-banner{background:#1a0000;border-bottom:1px solid #cc0000;text-align:center;
+padding:10px;letter-spacing:6px;font-size:11px;color:#cc0000;text-transform:uppercase;}
+.hero{text-align:center;padding:40px 20px 20px 20px;}
+.title{font-size:52px;font-weight:900;letter-spacing:10px;text-transform:uppercase;
+color:#ff1111;animation:flicker 3s infinite;line-height:1.1;}
+.subtitle{margin-top:10px;font-size:13px;letter-spacing:5px;color:#cc0000;
+text-transform:uppercase;animation:none !important;text-shadow:none !important;}
+.divider{width:60%;margin:24px auto;border:none;border-top:1px solid #330000;}
+.instructions-label{text-align:center;font-size:11px;letter-spacing:4px;
+color:#660000;text-transform:uppercase;margin-bottom:20px;}
+.cards{padding:0 20px;max-width:480px;margin:0 auto;}
+.card{background:#111;border-left:4px solid #cc0000;padding:22px 20px;
+margin-bottom:16px;animation:pulseborder 2.5s infinite;}
+.card-warning{background:#130000;border-left:4px solid #ff0000;}
+.card-number{font-size:32px;font-weight:900;color:#cc0000;line-height:1;
+margin-bottom:8px;letter-spacing:2px;}
+.card-text{font-size:17px;color:#e8e8e8;line-height:1.5;letter-spacing:0.5px;}
+.card-sub{font-size:12px;color:#666;margin-top:6px;letter-spacing:1px;}
+footer{text-align:center;margin-top:40px;font-size:10px;letter-spacing:3px;
+color:#330000;text-transform:uppercase;padding:0 20px;}
+</style>
+</head>
+<body>
+<div class="warning-banner">&#9888; &nbsp; Enter If You Dare &nbsp; &#9888;</div>
+<div class="hero">
+  <div class="title">Mind<br>Flayer</div>
+  <div class="subtitle">The Upside Down Awaits</div>
+</div>
+<hr class="divider">
+<div class="instructions-label">Ride Instructions</div>
+<div class="cards">
+  <div class="card">
+    <div class="card-number">01</div>
+    <div class="card-text">Press the button to start</div>
+    <div class="card-sub">Wait for the light and sound show to finish before continuing</div>
+  </div>
+  <div class="card">
+    <div class="card-number">02</div>
+    <div class="card-text">Wave your hand over the sensor near the scale</div>
+    <div class="card-sub">Control the ride with your movement</div>
+  </div>
+  <div class="card card-warning">
+    <div class="card-number">03</div>
+    <div class="card-text">After 20 seconds, the buzzer and light show will play again</div>
+    <div class="card-sub">&#9888; This is your signal to bring your hand back down</div>
+  </div>
+  <div class="card">
+    <div class="card-number">04</div>
+    <div class="card-text">Watch how you control the ride with your mind</div>
+    <div class="card-sub">The Flayer responds to your command</div>
+  </div>
+</div>
+<footer>Hawkins National Laboratory &mdash; Authorised Personnel Only</footer>
+</body>
+</html>"""
+
+# ─────────────────────────────────────────
+#  HELPER FUNCTIONS
+# ─────────────────────────────────────────
+
+def serve_web():
+    """Try to serve a web request without blocking. Call this frequently."""
+    try:
+        conn, addr = server.accept()
+        print("Client connected from", addr)
+        conn.recv(1024)
+        conn.send("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n")
+        conn.sendall(html)
+        conn.close()
+    except OSError:
+        pass  # No client waiting — that's fine
+
+
+# ── LED strip helpers ──
+
+def strip_set_all(r, g, b):
+    for i in range(NUM_STRIP):
+        strip[i] = (r, g, b)
+    strip.write()
+
+def strip_clear():
+    strip_set_all(0, 0, 0)
+
+
+# ── Buzzer helpers ──
+
+def tone(freq, duration_ms):
+    buzzer.freq(freq)
+    buzzer.duty(512)
+    time.sleep_ms(duration_ms)
+    buzzer.duty(0)
+
+def buzzer_off():
+    buzzer.duty(0)
+
+
+# ── NeoPixel ring helpers ──
+
+def ring_clear():
+    for i in range(NUM_RING):
+        ring[i] = (0, 0, 0)
+    ring.write()
+
+def ring_fill_cw(duration_s):
+    """Light up LEDs one by one clockwise. duration_s can be fractional or use ring_fill_cw_ms."""
+    delay = max(1, (int(duration_s * 1000)) // NUM_RING)
+    for i in range(NUM_RING):
+        ring[i] = (255, 0, 0)
+        ring.write()
+        time.sleep_ms(delay)
+
+def ring_drain_acw(duration_s):
+    """Turn off LEDs one by one anticlockwise."""
+    delay = max(1, (int(duration_s * 1000)) // NUM_RING)
+    for i in range(NUM_RING - 1, -1, -1):
+        ring[i] = (0, 0, 0)
+        ring.write()
+        time.sleep_ms(delay)
+
+def ring_fill_cw_ms(duration_ms):
+    """Light up LEDs one by one clockwise over duration_ms milliseconds."""
+    delay = max(1, duration_ms // NUM_RING)
+    for i in range(NUM_RING):
+        ring[i] = (255, 0, 0)
+        ring.write()
+        time.sleep_ms(delay)
+
+def ring_drain_acw_ms(duration_ms):
+    """Turn off LEDs one by one anticlockwise over duration_ms milliseconds."""
+    delay = max(1, duration_ms // NUM_RING)
+    for i in range(NUM_RING - 1, -1, -1):
+        ring[i] = (0, 0, 0)
+        ring.write()
+        time.sleep_ms(delay)
+
+
+# ── Motor helpers ──
+
+def motor1_cw():
+    m1_in1.value(1)
+    m1_in2.value(0)
+    m1_ena.duty_u16(65535)   # half speed
+
+def motor1_acw():
+    m1_in1.value(0)
+    m1_in2.value(1)
+    m1_ena.duty_u16(65535)   # half speed
+
+def motor1_stop():
+    m1_in1.value(0)
+    m1_in2.value(0)
+    m1_ena.duty_u16(0)
+
+def motor2_cw():
+    m2_in1.value(1)
+    m2_in2.value(0)
+    m2_ena.duty_u16(65535)   # half speed
+
+def motor2_stop():
+    m2_in1.value(0)
+    m2_in2.value(0)
+    m2_ena.duty_u16(0)
+
+
+# ── Full LED + buzzer light show ──
+
+def run_light_show():
+    """Plays the blue fade-in, portal pulse pattern, flashes and ready beeps."""
+
+    # Blue fade-in with rising tone
+    for b in range(0, 255, 5):
+        strip_set_all(0, 0, b)
+        buzzer.freq(300 + b * 2)
+        buzzer.duty(300)
+        time.sleep_ms(25)
+    buzzer_off()
+
+    # Portal pulse — blue ↔ purple x3
+    for _ in range(3):
+        for step in range(0, 50, 2):
+            strip_set_all(step * 2, 0, 255 - step)
+            buzzer.freq(500 + step * 10)
+            buzzer.duty(200)
+            time.sleep_ms(18)
+        for step in range(50, 0, -2):
+            strip_set_all(step * 2, 0, 255 - step)
+            buzzer.freq(500 + step * 10)
+            buzzer.duty(200)
+            time.sleep_ms(18)
+    buzzer_off()
+
+    # Two white flashes with sharp beep
+    for _ in range(2):
+        strip_set_all(255, 255, 255)
+        tone(2000, 120)
+        strip_clear()
+        time.sleep_ms(80)
+
+    strip_clear()
+
+    # Ready beeps — two ascending tones
+    tone(1000, 100)
+    time.sleep_ms(100)
+    tone(1200, 100)
+
+
+# ── Warning beeps at second 17 ──
+
+def run_warning_beeps():
+    """Repeats light show pattern briefly + 3 beeps (1 per second) for 3s warning."""
+    # Quick flash to signal warning
+    for _ in range(3):
+        strip_set_all(255, 0, 0)
+        tone(1000, 200)
+        strip_clear()
+        time.sleep_ms(800)   # 200ms beep + 800ms gap = 1 second per beep
+
+
+# ── Full reset ──
+
+def reset_all():
+    strip_clear()
+    ring_clear()
+    buzzer_off()
+    motor1_stop()
+    motor2_stop()
+    laser.off()
+    print("System reset. Ready for next rider.")
+
+
+# ─────────────────────────────────────────
+#  MAIN LOOP
+# ─────────────────────────────────────────
+
+print("Waiting for rider...")
+
+while True:
+
+    # Always serve web requests while idle
+    serve_web()
+
+    # ── STEP 1: Wait for button press (active LOW) ──
+    if pb.value() == 0:
+        print("Button pressed!")
+        time.sleep_ms(50)   # debounce
+
+        # ── STEP 2: Turn on laser, wait for LDR to confirm beam ──
+        laser.on()
+        print("Laser ON — waiting for LDR beam detection...")
+
+        beam_detected = False
+        for _ in range(50):          # wait up to ~5 seconds for beam
+            if ldr.value() == 0:     # LDR LOW = beam detected
+                beam_detected = True
+                break
+            serve_web()
+            time.sleep_ms(100)
+
+        if not beam_detected:
+            print("Beam not detected — aborting. Check laser/LDR alignment.")
+            laser.off()
+            continue                 # go back to waiting for button
+
+        print("Beam detected! Starting sequence...")
+
+        # ── STEP 3: LED strip + buzzer light show ──
+        run_light_show()
+
+        # ── STEP 4: Start 20-second ride timer ──
+        print("20-second ride starting!")
+        ride_start = time.ticks_ms()
+
+        # ── STEP 5a: Motor 2 starts CW immediately (runs full 20s) ──
+        motor2_cw()
+        print("Motor 2: CW (full 20s)")
+
+        # ── STEP 5b: Motor 1 one rotation CW + NeoPixel ring fills CW ──
+        motor1_cw()
+        print("Motor 1: CW (one rotation)")
+        ring_fill_cw_ms(MOTOR1_ROTATION_MS)
+
+        # ── STEP 5c: Motor 1 one rotation ACW + NeoPixel ring drains ACW ──
+        motor1_acw()
+        print("Motor 1: ACW (one rotation)")
+        ring_drain_acw_ms(MOTOR1_ROTATION_MS)
+        
+        motor1_cw()
+        print("Motor 1: CW (one rotation)")
+        ring_fill_cw_ms(MOTOR1_ROTATION_MS)
+
+        # ── STEP 5c: Motor 1 one rotation ACW + NeoPixel ring drains ACW ──
+        motor1_acw()
+        print("Motor 1: ACW (one rotation)")
+        ring_drain_acw_ms(MOTOR1_ROTATION_MS)
+        
+        motor1_cw()
+        print("Motor 1: CW (one rotation)")
+        ring_fill_cw_ms(MOTOR1_ROTATION_MS)
+
+        # ── STEP 5c: Motor 1 one rotation ACW + NeoPixel ring drains ACW ──
+        motor1_acw()
+        print("Motor 1: ACW (one rotation)")
+        ring_drain_acw_ms(MOTOR1_ROTATION_MS)
+
+        # Motor 1 done — stop it
+        motor1_stop()
+        ring_clear()
+        print("Motor 1: stopped. NeoPixel ring off.")
+
+        # ── STEP 6: Wait until second 17, serving web requests ──
+        print("Waiting until second 17...")
+        while True:
+            serve_web()
+            elapsed = time.ticks_diff(time.ticks_ms(), ride_start)
+            if elapsed >= 17000:
+                break
+            time.sleep_ms(50)
+
+        # ── STEP 7: Warning at second 17 — light show + 3 beeps ──
+        print("WARNING: 3 seconds left!")
+        run_warning_beeps()          # takes ~3 seconds (3 x 1s beeps)
+
+        # ── STEP 8: Second 20 — stop everything and reset ──
+        motor2_stop()
+        laser.off()
+        reset_all()
+        print("Ride complete!\n")
+
+    time.sleep_ms(20)   # small idle delay to keep loop responsive
